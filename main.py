@@ -1,209 +1,107 @@
-import os
-import subprocess
 import json
-import logging
-from hashlib import sha256
-import urllib.request
+import subprocess
 
-# Set up logging configuration
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
 
-# Function to fetch and process the blocklist from a URL
-def fetch_and_process_blocklist(url):
+def merge_rules(rules_file, add_rules_file):
+    # Đọc nội dung từ rules.json
+    with open(rules_file, 'r', encoding='utf-8') as rf:
+        try:
+            rules = json.load(rf)
+        except json.JSONDecodeError:
+            rules = []
+
+    # Đọc nội dung từ add_rules.json
+    with open(add_rules_file, 'r', encoding='utf-8') as arf:
+        try:
+            add_rules = json.load(arf)
+        except json.JSONDecodeError:
+            add_rules = []
+
+    # Tìm ID lớn nhất hiện tại trong rules.json
+    max_id = max((rule.get('id', 0) for rule in rules), default=0)
+
+    # Gán ID mới cho các rule trong add_rules.json
+    for idx, rule in enumerate(add_rules, start=1):
+        rule['id'] = max_id + idx
+
+    # Kết hợp rules.json và add_rules.json
+    merged_rules = rules + add_rules
+
+    # Loại bỏ các rule trùng lặp (so sánh toàn bộ rule trừ ID)
+    seen = set()
+    unique_rules = []
+    for rule in merged_rules:
+        rule_key = json.dumps({k: v for k, v in rule.items() if k != 'id'}, sort_keys=True)
+        if rule_key not in seen:
+            seen.add(rule_key)
+            unique_rules.append(rule)
+
+    # Cập nhật lại ID để liên tục
+    for idx, rule in enumerate(unique_rules, start=1):
+        rule['id'] = idx
+
+    # Ghi lại rules.json với nội dung đã hợp nhất và loại bỏ trùng lặp
+    with open(rules_file, 'w', encoding='utf-8') as wf:
+        json.dump(unique_rules, wf, indent=2, ensure_ascii=False)
+
+    # Giữ nguyên định dạng của add_rules.json
+    with open(add_rules_file, 'r', encoding='utf-8') as af:
+        original_format = af.read()
+
+    # Ghi lại add_rules.json với nội dung rỗng nhưng giữ định dạng cũ
+    empty_json = "[]"  # Nội dung rỗng
+    if original_format.startswith("[\n") and original_format.endswith("\n]"):
+        empty_json = "[\n\n]"  # Giữ nguyên xuống dòng
+
+    with open(add_rules_file, 'w', encoding='utf-8') as af:
+        af.write(empty_json)
+
+    print(f"Đã hợp nhất {len(add_rules)} rule(s) vào {rules_file}, loại bỏ trùng lặp và cập nhật ID.")
+
+
+def configure_git(username, email):
     try:
-        # Tạo Request object với User-Agent tùy chỉnh
-        request = urllib.request.Request(
-            url,
-            headers={"User-Agent": "Mozilla/5.0"}
-        )
-        
-        # Fetch the content from the URL
-        with urllib.request.urlopen(request) as response:
-            content = response.read().decode('utf-8')
-        
-        # Filter the lines starting with '||' and ending with '^' for domains
-        url_filters = [
-            line.strip()[2:-1]  # Remove the '||' prefix and the '^' suffix
-            for line in content.split("\n")
-            if line.startswith("||") and line.endswith("^")
-        ]
-        
-        return url_filters
-    except Exception as e:
-        logger.error(f"Error fetching blocklist from {url}: {e}")
-        return []
-
-# Function to read URLs from list.txt
-def read_urls_from_file(file_path):
-    urls = []
-    if os.path.exists(file_path):
-        with open(file_path, 'r') as file:
-            urls = [line.strip() for line in file.readlines() if line.strip()]
-    else:
-        logger.error(f"{file_path} not found!")
-    return urls
-
-# Function to remove subdomains if a higher domain exists
-def remove_subdomains_if_higher(domains: set[str]) -> set[str]:
-    top_level_domains = set()
-    
-    for domain in domains:
-        parts = domain.split(".")
-            
-        is_lower_subdomain = False            
-        for i in range(1, len(parts)):
-            higher_domain = ".".join(parts[i:])
-            if higher_domain in domains:
-                is_lower_subdomain = True
-                break
-                    
-        if not is_lower_subdomain:
-            top_level_domains.add(domain)
-                
-    return top_level_domains
-
-# Function to generate Chrome extension rules
-def generate_chrome_rules(filters):
-    rules = []
-    unique_domains = sorted(remove_subdomains_if_higher(set(filters)))  # Remove subdomains and sort
-    
-    # Ensure IDs start from 1
-    for idx, filter in enumerate(unique_domains, 1):  # Start from 1
-        rule = {
-            "id": idx,
-            "priority": 1,
-            "action": {
-                "type": "block"
-            },
-            "condition": {
-                "urlFilter": f"||{filter}"  # Re-add '||' before domain
-            }
-        }
-        rules.append(rule)
-    
-    return rules
-
-def get_file_hash(file_path):
-    sha256_hash = sha256()
-    try:
-        with open(file_path, "rb") as f:
-            for byte_block in iter(lambda: f.read(4096), b""):
-                sha256_hash.update(byte_block)
-        return sha256_hash.hexdigest()
-    except FileNotFoundError:
-        return None
-
-# Function to compress JSON by removing spaces and newlines
-def compress_json(file_path):
-    """
-    Compress a JSON file by removing spaces and newlines.
-    """
-    try:
-        with open(file_path, 'r') as file:
-            data = json.load(file)  # Đọc JSON
-        
-        # Ghi lại JSON với cấu trúc nén
-        with open(file_path, 'w') as file:
-            json.dump(data, file, separators=(',', ':'))  # Nén bằng cách loại bỏ khoảng trắng
-        
-        logger.info(f"Đã nén file {file_path}.")
-    except Exception as e:
-        logger.error(f"Lỗi khi nén file JSON {file_path}: {e}")
-
-# Main function to create rules.json
-def create_rules_json():
-    url_file_path = "list.txt"  # Path to the external list.txt file containing URLs
-    urls = read_urls_from_file(url_file_path)
-    
-    if not urls:
-        logger.error("No URLs found in the list.txt file. Exiting.")
-        return
-    
-    # Fetch and process blocklist for each URL in the list
-    all_domains = []
-    for url in urls:
-        domains = fetch_and_process_blocklist(url)
-        all_domains.extend(domains)
-    
-    # Remove duplicates and process the domains
-    all_domains = sorted(set(all_domains))  # Remove duplicates and sort
-    
-    dynamic_rules = generate_chrome_rules(all_domains)
-    
-    rules_file = "rules.json"
-    
-    # Save the generated rules into rules.json
-    with open(rules_file, "w") as file:
-        json.dump(dynamic_rules, file, indent=4)
-    
-    logger.info(f"Đã tạo file {rules_file} với {len(all_domains)} tên miền.")
-    
-    # Merge with custom rules and create a final rules.json
-    merge_custom_rules(rules_file)
-    
-    # Nén file rules.json
-    compress_json(rules_file)
-    
-    # Commit và đẩy lên git
-    commit_and_push(rules_file)
-
-def merge_custom_rules(rules_file):
-    custom_rules_file = "custom_rules.json"
-    
-    # Load existing rules from rules.json
-    existing_rules = load_json(rules_file)
-    custom_rules = load_json(custom_rules_file)
-
-    # Find the last ID in existing rules (rules.json)
-    max_existing_id = max((rule['id'] for rule in existing_rules), default=0)
-    
-    # Update custom rule IDs to continue from the highest existing ID
-    for rule in custom_rules:
-        rule['id'] += max_existing_id  # Adjust ID to avoid duplication
-
-    # Append custom rules to existing rules
-    existing_rules.extend(custom_rules)
-    
-    # Save the final combined rules to rules.json
-    save_json(rules_file, existing_rules)
-
-    logger.info(f"Đã kết hợp {len(custom_rules)} custom rules vào {rules_file}.")
-
-def load_json(file_path):
-    """Load JSON data from a file."""
-    if os.path.exists(file_path):
-        with open(file_path, 'r') as file:
-            return json.load(file)
-    return []
-
-def save_json(file_path, data):
-    """Save data to a JSON file."""
-    with open(file_path, 'w') as file:
-        json.dump(data, file, indent=4)
-
-def commit_and_push(file_path):
-    try:
-        subprocess.run(["git", "config", "--global", "user.name", "github-actions"], check=True)
-        subprocess.run(["git", "config", "--global", "user.email", "actions@github.com"], check=True)
-
-        status_result = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True)
-        status_output = status_result.stdout.strip()
-        
-        if status_output:
-            logger.info(f"Đã thay đổi file {file_path}. Tiến hành commit và push.")
-            
-            # Add only the rules.json file to git
-            subprocess.run(["git", "add", file_path], check=True)  # Add rules.json
-            
-            subprocess.run(["git", "commit", "-m", f"Update {file_path}"], check=True)
-            subprocess.run(["git", "push"], check=True)
-        else:
-            logger.warning(f"Không có thay đổi trong {file_path}. Không cần commit.")
-    
+        # Thiết lập Git user và email
+        subprocess.run(["git", "config", "--global", "user.name", username], check=True)
+        subprocess.run(["git", "config", "--global", "user.email", email], check=True)
+        print(f"Cấu hình Git với user: {username}, email: {email}")
     except subprocess.CalledProcessError as e:
-        logger.error(f"Lỗi khi thực hiện lệnh git: {e}")
+        print(f"Lỗi khi cấu hình Git: {e}")
+
+
+def git_commit_and_push(files, commit_message):
+    try:
+        # Add file vào staging
+        subprocess.run(["git", "add"] + files, check=True)
+
+        # Commit với thông điệp
+        subprocess.run(["git", "commit", "-m", commit_message], check=True)
+
+        # Push lên remote repository
+        subprocess.run(["git", "push"], check=True)
+
+        print("Đã commit và đẩy thay đổi lên GitHub.")
+    except subprocess.CalledProcessError as e:
+        print(f"Lỗi khi thực hiện Git: {e}")
 
 
 if __name__ == "__main__":
-    create_rules_json()
+    # Đường dẫn file
+    rules_file_path = "custom_rules.json"
+    add_rules_file_path = "add_rules.json"
+
+    # Git user và email
+    git_user = "github-actions[bot]"  # Thay bằng tên người dùng của bạn nếu cần
+    git_email = "github-actions[bot]@users.noreply.github.com"
+
+    # Lời nhắn commit
+    commit_msg = "Auto update rules.json and clear add_rules.json: Merged and removed duplicates"
+
+    # Cấu hình Git
+    configure_git(git_user, git_email)
+
+    # Gọi hàm hợp nhất và loại bỏ trùng lặp
+    merge_rules(rules_file_path, add_rules_file_path)
+
+    # Commit và push cả hai file
+    git_commit_and_push([rules_file_path, add_rules_file_path], commit_msg)
