@@ -67,12 +67,12 @@ def git_commit_and_push(files, commit_message):
 if __name__ == "__main__":
     # Danh sách file input
     input_files = [
-        "dnr_ads.json",
-        "dnr_annoyances.json",
-        "dnr_tracking.json",
-        "dnr_lang-vi.json",
-        "dnr_fixes.json",
-        "add_rules.json",
+        "dnr-ads.json",
+        "dnr-annoyances.json",
+        "dnr-tracking.json",
+        "dnr-lang-vi.json",
+        "dnr-fixes.json",
+        "add-rules.json",
     ]
     
     # File output
