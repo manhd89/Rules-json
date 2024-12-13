@@ -72,7 +72,7 @@ if __name__ == "__main__":
         "dnr-tracking.json",
         "dnr-lang-vi.json",
         "dnr-fixes.json",
-        "add-rules.json",
+        "add_rules.json",
     ]
     
     # File output
